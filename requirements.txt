@@ -1,0 +1,13 @@
+streamlit
+pandas
+numpy
+plotly
+requests
+# PDF Processing Libraries (optional, but script tries to use them)
+PyPDF2
+PyMuPDF
+pdfplumber
+# NLP Libraries (optional, but script tries to use them)
+transformers
+torch # Common backend for transformers, especially for Hugging Face pipelines
+textstat
