@@ -76,8 +76,9 @@ st.set_page_config(
 )
 
 # API Configuration
-import os
-ALL_GROQ_API_KEYS = os.getenv("ALL_GROQ_API_KEYS")
+import streamlit as st
+ALL_GROQ_API_KEYS = st.secrets["ALL_GROQ_API_KEYS"]
+
 GROQ_CHAT_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 # NEW: Added Whisper API URL
 GROQ_WHISPER_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
