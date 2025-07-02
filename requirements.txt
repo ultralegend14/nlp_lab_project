@@ -11,3 +11,4 @@ pdfplumber
 transformers
 torch # Common backend for transformers, especially for Hugging Face pipelines
 textstat
+matplotlib
