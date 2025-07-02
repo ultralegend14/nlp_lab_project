@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 import json
 import re
+from streamlit_webrtc import AudioProcessorBase
 from datetime import datetime
 from io import BytesIO
 import time
