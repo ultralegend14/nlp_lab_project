@@ -22,3 +22,6 @@ textstat
 pandas
 requests
 scikit-learn
+streamlit-webrtc 
+av 
+numpy
