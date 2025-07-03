@@ -1,18 +1,3 @@
-# ==============================================================================
-# 📈 SALES DOCUMENT ANALYZER - FINAL, COMPLETE, AND UNABRIDGED VERSION
-# ==============================================================================
-#
-# DESCRIPTION:
-# This is the full, unabridged code as requested. It takes the user's original
-# 752-line script and ONLY adds the necessary code to implement a stable
-# voice recording feature using 'streamlit-webrtc', fixing the previous
-# component error. No original code has been removed or shortened.
-#
-# REQUIRED LIBRARIES:
-# pip install streamlit pandas numpy plotly transformers torch textstat PyPDF2 PyMuPDF pdfplumber wordcloud matplotlib requests streamlit-webrtc av
-#
-# ==============================================================================
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -24,18 +9,16 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 import json
 import re
-from streamlit_webrtc import AudioProcessorBase
 from datetime import datetime
 from io import BytesIO
 import time
 from typing import Dict, List, Optional, Tuple, Any
 import warnings
-import threading # Required for streamlit-webrtc processing
+import speech_recognition as sr
+
 warnings.filterwarnings('ignore')
 
-# --- Library Availability Checks ---
-
-# PDF Processing Libraries
+# PDF Processing
 try:
     import PyPDF2
     import fitz  # PyMuPDF
@@ -44,7 +27,7 @@ try:
 except ImportError:
     PDF_LIBRARIES_AVAILABLE = False
 
-# NLP Libraries (HuggingFace Transformers, textstat)
+# NLP Libraries
 try:
     from transformers import pipeline
     from textstat import flesch_reading_ease, flesch_kincaid_grade
@@ -52,21 +35,13 @@ try:
 except ImportError:
     NLP_LIBRARIES_AVAILABLE = False
 
-# Word Cloud Visualization
+# Word Cloud
 try:
     from wordcloud import WordCloud, STOPWORDS
     import matplotlib.pyplot as plt
     WORDCLOUD_AVAILABLE = True
 except ImportError:
     WORDCLOUD_AVAILABLE = False
-
-# Voice Input Libraries (Using the stable streamlit-webrtc)
-try:
-    from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
-    import av # Required for audio frame processing by streamlit-webrtc
-    VOICE_LIBRARIES_AVAILABLE = True
-except ImportError:
-    VOICE_LIBRARIES_AVAILABLE = False
 
 # ========== CONFIGURATION ==========
 st.set_page_config(
@@ -75,67 +50,12 @@ st.set_page_config(
     layout="wide"
 )
 
-# API Configuration
-import streamlit as st
-ALL_GROQ_API_KEYS = st.secrets["ALL_GROQ_API_KEYS"]
-
-GROQ_CHAT_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-# NEW: Added Whisper API URL
-GROQ_WHISPER_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-
-
-# ========== NEW: AUDIO RECORDER CLASS FOR STREAMLIT-WEBRTC ==========
-# This class replaces the faulty st_audiorec component. It captures audio
-# frames from the browser and converts them into a processable WAV format.
-class AudioRecorder(AudioProcessorBase):
-    def __init__(self) -> None:
-        self._frames = []
-        self._lock = threading.Lock()
-
-    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-        # This method receives audio frames from the browser in real-time.
-        with self._lock:
-            self._frames.append(frame)
-        return frame
-
-    def get_recorded_audio(self) -> Optional[bytes]:
-        """
-        Combines all received audio frames into a single WAV byte object.
-        This is called after the user stops the recording.
-        """
-        with self._lock:
-            if not self._frames:
-                return None
-
-            # Use the sample rate from the first frame
-            sample_rate = self._frames[0].sample_rate
-            
-            # Concatenate all audio frame data into one numpy array
-            audio_data = np.concatenate([f.to_ndarray() for f in self._frames], axis=1)
-
-            # Create an in-memory buffer to write the WAV file to
-            output_buffer = BytesIO()
-            
-            # Use PyAV to encode the raw audio data into WAV format
-            with av.open(output_buffer, 'w', 'wav') as out_container:
-                # Add a mono audio stream with the correct sample rate
-                out_stream = out_container.add_stream('pcm_s16le', rate=sample_rate, layout='mono')
-                
-                # Reshape data for mono and create a new AudioFrame
-                reshaped_data = audio_data.T.reshape(1, -1)
-                frame = av.AudioFrame.from_ndarray(reshaped_data, format='s16', layout='mono')
-                frame.sample_rate = sample_rate
-                
-                # Encode and write the frame to the buffer
-                for packet in out_stream.encode(frame):
-                    out_container.mux(packet)
-            
-            # Clear the frames for the next recording session
-            self._frames = []
-
-            # Return the complete WAV file as bytes
-            return output_buffer.getvalue()
-
+# --- IMPORTANT: PASTE YOUR GROQ API KEYS HERE ---
+# Get your free keys from: https://console.groq.com/keys
+ALL_GROQ_API_KEYS = [
+    "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",
+]
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # ========== PDF PROCESSING ==========
 class PDFProcessor:
@@ -182,7 +102,7 @@ class PDFProcessor:
         
         return max(all_texts, key=len) if all_texts else ""
 
-# ========== GROQ API INTERFACE (AUGMENTED) ==========
+# ========== GROQ API INTERFACE ==========
 class GroqInterface:
     def __init__(self, api_keys_list: List[str]):
         if not api_keys_list:
@@ -194,9 +114,7 @@ class GroqInterface:
             raise ValueError("No valid API keys (starting with gsk_ and not placeholders) were found in the provided list.")
 
         self.current_key_index = 0
-        self.chat_url = GROQ_CHAT_API_URL
-        # NEW: Added Whisper URL attribute
-        self.whisper_url = GROQ_WHISPER_API_URL
+        self.base_url = GROQ_API_URL
         
         # Define prompts within the class or as a class attribute
         self.prompts = {
@@ -273,20 +191,8 @@ class GroqInterface:
             "risk": """
             Conduct a sales risk assessment. Identify risks impacting sales: Market, Operational, Customer, Product, Strategic. Describe each, potential impact, and mitigations if mentioned. Use Markdown.
             """,
-            # NEW: Added prompt for voice correction
-            "voice_correction": """
-            You are an expert AI assistant specializing in correcting speech-to-text transcriptions. The following text was transcribed from a user's voice and may contain errors. Your task is to correct any spelling mistakes, fix grammatical errors, and rephrase it into a clear, coherent, and natural-sounding question or command.
-            - Focus on the user's intent.
-            - Do not add any information that isn't present in the original text.
-            - Output ONLY the corrected text, with no preamble, explanation, or quotation marks.
-
-            Example 1:
-            Original: what was the total sell for product alpha in quarter tree
-            Corrected: What was the total sales for Product Alpha in Quarter 3?
-
-            Example 2:
-            Original: show me the risk assess meant for the european market
-            Corrected: Show me the risk assessment for the European market.
+            "text_enhancement": """
+            You are a text enhancement assistant. Fix any spelling or grammar errors in the following text, but preserve the meaning and intent. Only return the corrected text without any additional comments or explanations.
             """
         }
 
@@ -306,7 +212,7 @@ class GroqInterface:
             data = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
             
             try:
-                response = requests.post(self.chat_url, headers=headers, json=data, timeout=180)
+                response = requests.post(self.base_url, headers=headers, json=data, timeout=180)
                 response.raise_for_status()
                 
                 self.current_key_index = (self.current_key_index + 1) % num_valid_keys
@@ -366,46 +272,74 @@ class GroqInterface:
         output_tokens = 4096 if analysis_type == "kpi" else 3000
         return self.call_api(messages, max_tokens=output_tokens)
     
-    # NEW: Method to transcribe audio
-    def transcribe_audio(self, audio_bytes: bytes) -> str:
-        """Transcribes audio using the Groq Whisper API with key rotation."""
-        num_keys = len(self.api_keys)
-        last_known_error = f"❌ Transcription Error: All {num_keys} API keys failed."
+    def enhance_text(self, text: str) -> str:
+        """Enhance text by correcting spelling and grammar errors"""
+        system_message = self.prompts.get("text_enhancement", "")
+        if not system_message:
+            return text
+        
+        messages = [{"role": "system", "content": system_message},
+                   {"role": "user", "content": f"Text to correct: {text}"}]
+        
+        return self.call_api(messages, max_tokens=len(text) + 100)
 
-        for _ in range(num_keys):
-            current_key = self.api_keys[self.current_key_index]
-            headers = {"Authorization": f"Bearer {current_key}"}
-            files = {'file': ('audio.wav', audio_bytes, 'audio/wav')}
-            data = {'model': 'whisper-large-v3'}
-
+# ========== SPEECH RECOGNITION ==========
+def transcribe_audio():
+    """Transcribe audio from microphone input"""
+    try:
+        r = sr.Recognizer()
+        
+        # Configure recognizer for better accuracy
+        r.energy_threshold = 300
+        r.dynamic_energy_threshold = True
+        r.pause_threshold = 0.8
+        r.phrase_threshold = 0.3
+        r.non_speaking_duration = 0.8
+        
+        with sr.Microphone() as source:
+            # Create placeholder for listening status
+            status_placeholder = st.empty()
+            status_placeholder.markdown('<div style="text-align: center; color: #ff6b6b; font-weight: bold; padding: 1rem; background: rgba(255, 107, 107, 0.1); border-radius: 10px; margin: 1rem 0;">🎤 Listening... Speak clearly!</div>', unsafe_allow_html=True)
+            
+            # Adjust for ambient noise
+            r.adjust_for_ambient_noise(source, duration=1.0)
+            
+            # Listen for audio
+            audio = r.listen(source, timeout=10, phrase_time_limit=15)
+            status_placeholder.empty()
+            
+            # Show processing status
+            processing_placeholder = st.empty()
+            processing_placeholder.markdown('<div style="text-align: center; color: #4834d4; font-weight: bold; padding: 1rem; background: rgba(72, 52, 212, 0.1); border-radius: 10px; margin: 1rem 0;">🔄 Processing speech...</div>', unsafe_allow_html=True)
+            
+            # Try multiple recognition services for better accuracy
+            text = ""
             try:
-                response = requests.post(self.whisper_url, headers=headers, files=files, data=data, timeout=60)
-                response.raise_for_status()
-                # Rotate key only on success
-                self.current_key_index = (self.current_key_index + 1) % num_keys
-                return response.json()['text']
-            except requests.exceptions.RequestException as req_err:
-                last_known_error = f"Request Error during transcription with key ...{current_key[-4:]}: {req_err}. Trying next key."
-                self.current_key_index = (self.current_key_index + 1) % num_keys
-                time.sleep(0.25)
-            except Exception as e:
-                return f"❌ Unexpected Error during transcription: {e}"
-        return last_known_error
-
-    # NEW: Method to correct transcription
-    def get_corrected_transcription(self, raw_text: str) -> str:
-        """Uses an LLM to correct a raw transcription."""
-        if not raw_text or not raw_text.strip():
-            return ""
-        
-        system_message = self.prompts["voice_correction"]
-        messages = [
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": raw_text}
-        ]
-        
-        # Use a smaller, faster model for this simple correction task
-        return self.call_api(messages, model="llama3-8b-8192", temperature=0.1, max_tokens=300)
+                # Primary: Google Speech Recognition
+                text = r.recognize_google(audio, language='en-US')
+            except sr.UnknownValueError:
+                try:
+                    # Fallback: Google with alternative language model
+                    text = r.recognize_google(audio, language='en-IN')
+                except sr.UnknownValueError:
+                    processing_placeholder.empty()
+                    st.error("❌ Could not understand the audio. Please speak more clearly.")
+                    return ""
+            
+            processing_placeholder.empty()
+            
+            if text:
+                st.success(f"✅ Transcribed: \"{text}\"")
+                return text.strip()
+                
+    except sr.WaitTimeoutError:
+        st.warning("⏰ No speech detected within 10 seconds. Please try again.")
+    except sr.RequestError as e:
+        st.error(f"❌ Speech recognition service error: {e}")
+    except Exception as e:
+        st.error(f"❌ Unexpected error during transcription: {e}")
+    
+    return ""
 
 # ========== NLP ANALYZER ==========
 class NLPAnalyzer:
@@ -496,7 +430,7 @@ class NLPAnalyzer:
                           'grade_level': 'N/A (text too short or NLP lib unavailable)'})
         return stats
 
-# ========== KPI PARSING AND CHARTING (ORIGINAL UNTOUCHED VERSION) ==========
+# ========== KPI PARSING AND CHARTING ==========
 def convert_value_unit_v2(value_str: Optional[str], unit_str: Optional[str]) -> Tuple[Optional[float], str]:
     if value_str is None or str(value_str).strip() == "": return None, str(unit_str or "UNKNOWN").strip().upper()
     
@@ -576,7 +510,7 @@ def parse_kpi_data_from_ai_text_v2(ai_text: str) -> List[Dict[str, Any]]:
         "product_model_name": ["product/model name", "product name", "model name", "item"],
         "category": ["category", "type", "segment"], 
         "metric_type": ["metric type", "value type", "data type"], 
-        "region_segment": ["region/segment", "region", "market", "segment name"],
+        "region_segment": ["region/segment", "region", "market", "segment"],
         "context_period": ["context/period", "context", "notes", "description", "period (if known)"]
     }
 
@@ -888,11 +822,8 @@ def main():
     st.markdown("Upload a sales-related PDF to extract insights, KPIs, and generate visualizations using advanced NLP.")
     
     if not PDF_LIBRARIES_AVAILABLE: 
-        st.error("CRITICAL: PDF processing libraries are not installed.")
-        st.stop()
-
-    if not VOICE_LIBRARIES_AVAILABLE:
-        st.error("CRITICAL: Voice libraries (`streamlit-webrtc`, `av`) are not installed.")
+        st.error("CRITICAL: PDF processing libraries (PyPDF2, PyMuPDF, pdfplumber) are not installed. "
+                 "Please install them: `pip install PyPDF2 PyMuPDF pdfplumber`")
         st.stop()
 
     initial_valid_keys_present = False
@@ -904,7 +835,8 @@ def main():
     
     if not initial_valid_keys_present:
         st.error(
-            "CRITICAL: No valid Groq API Keys are configured in `ALL_GROQ_API_KEYS` list."
+            "CRITICAL: No valid Groq API Keys are configured in the `ALL_GROQ_API_KEYS` list. "
+            "Please add at least one valid key (e.g., 'gsk_xxxxxxxx') to the script."
         )
         st.stop()
         
@@ -921,6 +853,7 @@ def main():
         opt_sentiment = st.checkbox("Sentiment Analysis", True, help="Uses HuggingFace Transformers locally.")
         opt_regex_terms = st.checkbox("Extract Common Terms (Regex)", True, help="Uses regular expressions to find common sales-related terms.")
         opt_wordcloud = st.checkbox("Generate Word Cloud", True, help="Creates a visual representation of the most frequent words.")
+        opt_auto_correct = st.checkbox("Auto-correct speech transcription", True, help="Automatically correct transcribed speech using AI")
 
     uploaded_file = st.file_uploader("Upload Sales PDF Document", type=["pdf"], help="Text-based PDFs work best. Scanned PDFs (images) will not work well.")
     
@@ -929,7 +862,8 @@ def main():
             text = PDFProcessor.process_pdf(uploaded_file)
         
         if not text or len(text.strip()) < 50: 
-            st.error("❌ No significant text could be extracted from the PDF. ")
+            st.error("❌ No significant text could be extracted from the PDF. "
+                     "The PDF might be image-based, empty, or corrupted. Please try a different, text-based PDF.")
             return 
         
         st.success(f"✅ Text extracted successfully (~{len(text):,} characters).")
@@ -989,12 +923,12 @@ def main():
                 else:
                     st.warning(f"Sentiment Analysis Issue: {sentiment_results['error']}")
             elif opt_sentiment and not NLP_LIBRARIES_AVAILABLE:
-                 st.warning("NLP libraries for sentiment analysis are not available.")
+                 st.warning("NLP libraries for sentiment analysis are not available. Please install `transformers` and `torch`/`tensorflow`.")
 
         with tab2:
             st.header(tab_names[1])
             if st.button("📊 Extract Sales KPIs (for Charts)", key="btn_kpi_extraction", type="primary"):
-                with st.spinner("Extracting Key Performance Indicators... This can take some time."):
+                with st.spinner("Extracting Key Performance Indicators... This can take some time due to detailed formatting requirements."):
                     st.session_state.kpi_text_ai = groq.analyze_document(text, "kpi") 
             
             if 'kpi_text_ai' in st.session_state and st.session_state.kpi_text_ai:
@@ -1009,7 +943,8 @@ def main():
                     if parsed_kpi_data:
                         create_dynamic_kpi_charts_v2(parsed_kpi_data)
                     else:
-                        st.warning("Could not parse plottable KPIs from the response.")
+                        st.warning("Could not parse plottable KPIs from the response, or no specific data series were found in the required format. "
+                                   "Please check the raw data output above.")
             
             st.markdown("---")
             
@@ -1023,6 +958,8 @@ def main():
                         st.pyplot(wordcloud_fig)
                     else:
                         st.info("Could not generate word cloud.")
+                elif opt_wordcloud and not WORDCLOUD_AVAILABLE:
+                    st.warning("WordCloud library not installed. Please install it (`pip install wordcloud matplotlib`) to see the visualization.")
             
             with keyword_cols_2:
                 if opt_regex_terms:
@@ -1038,65 +975,105 @@ def main():
                                 if term_values: 
                                     st.markdown(f"**{term_category.replace('_',' ').title()}:** {', '.join(term_values)}")
                     else:
-                        st.info("No common sales terms were found by the regex patterns.")
+                        st.info("No common sales terms were found by the regex patterns in this document.")
 
         with tab3:
             st.header(tab_names[2])
+            st.subheader("🎯 Quick Predefined Questions")
             qa_context_limit = 7000 
             qa_context = text[:qa_context_limit]
 
-            # --- VOICE INPUT SECTION USING STREAMLIT-WEBRTC ---
-            st.subheader("🎙️ Ask by Voice")
-            st.markdown("Click **START** to record your question, and **STOP** when you are finished. The AI will process your voice and put the corrected question in the text box below.")
-
-            webrtc_ctx = webrtc_streamer(
-                key="audio-recorder",
-                mode=WebRtcMode.SENDONLY,
-                audio_processor_factory=AudioRecorder,
-                media_stream_constraints={"video": False, "audio": True},
-            )
-
-            # This block runs when the user clicks "STOP"
-            if not webrtc_ctx.state.playing and webrtc_ctx.audio_processor:
-                audio_processor = webrtc_ctx.audio_processor
-                # Get the recorded audio bytes from the processor
-                recorded_audio = audio_processor.get_recorded_audio()
-
-                # Process only if there is new audio data
-                if recorded_audio and st.session_state.get("last_audio_chunk") != recorded_audio:
-                    st.session_state["last_audio_chunk"] = recorded_audio
-                    
-                    with st.spinner("Transcribing audio..."):
-                        raw_transcript = groq.transcribe_audio(recorded_audio)
-                        st.session_state.raw_transcript = raw_transcript
-
-                    if "❌" not in raw_transcript and raw_transcript.strip():
-                        st.info(f"**Raw Transcription:** *{st.session_state.raw_transcript}*")
-                        with st.spinner("AI is correcting the transcription..."):
-                            corrected_transcript = groq.get_corrected_transcription(raw_transcript)
-                            st.session_state.corrected_transcript = corrected_transcript
-                    else:
-                        st.session_state.corrected_transcript = "" 
-                        st.error(f"Audio transcription failed or was empty. Error: {raw_transcript}")
+            predefined_questions = [
+                "What are the main product or model sales figures mentioned?", 
+                "List the key sales metrics and their values found in the document.", 
+                "What are the major sales risks identified?", 
+                "Provide a brief overall sales performance summary based on this document."
+            ]
             
-            if 'corrected_transcript' in st.session_state and st.session_state.corrected_transcript:
-                st.success(f"**AI-Corrected Question:** *{st.session_state.corrected_transcript}*")
+            q_cols = st.columns(len(predefined_questions))
+            for idx, question_text in enumerate(predefined_questions):
+                if q_cols[idx].button(question_text, key=f"quick_q_{idx}"):
+                    with st.spinner(f"Answering: \"{question_text[:30]}...\""):
+                        qa_messages = [
+                            {"role": "system", "content": "You are a helpful Q&A assistant. Answer the user's question based ONLY on the provided document context. If the information is not found in the context, explicitly state that. Be concise."},
+                            {"role": "user", "content": f"Document Context:\n```\n{qa_context}\n```\n\nQuestion: {question_text}"}
+                        ]
+                        answer = groq.call_api(qa_messages, max_tokens=1024) 
+                        st.info(f"**Question:** {question_text}\n\n**Answer:**\n{answer}")
             
-            # --- TEXT INPUT Q&A SECTION ---
             st.subheader("❓ Ask Your Own Question About the Document")
-            custom_question = st.text_area("Enter your question here:", 
-                                           value=st.session_state.get('corrected_transcript', ''),
-                                           placeholder="e.g., What were the total sales for Region X in Q3 2023?", 
-                                           height=100)
-            if st.button("🔍 Get Answer", key="custom_q_btn", type="primary"):
-                if custom_question.strip():
+            
+            # Initialize session state for transcribed question
+            if 'transcribed_question' not in st.session_state:
+                st.session_state.transcribed_question = ''
+            
+            # Check if we need to force a rerun after transcription
+            if 'force_rerun' not in st.session_state:
+                st.session_state.force_rerun = False
+            
+            col1, col2 = st.columns([4, 1])
+            
+            with col2:
+                st.write("")
+                st.write("")
+                if st.button("🎤 Record", key="custom_q_mic", help="Record your question using microphone"):
+                    with st.spinner("🎤 Recording and transcribing..."):
+                        transcribed_text = transcribe_audio()
+                        if transcribed_text:
+                            if opt_auto_correct:
+                                with st.spinner("Enhancing transcription..."):
+                                    try:
+                                        enhanced_text = groq.enhance_text(transcribed_text)
+                                        st.session_state.transcribed_question = enhanced_text
+                                        st.success(f"✅ Transcribed and enhanced: '{enhanced_text}'")
+                                    except Exception as e:
+                                        st.error(f"Enhancement failed: {e}")
+                                        st.session_state.transcribed_question = transcribed_text
+                                        st.success(f"✅ Transcribed: '{transcribed_text}'")
+                            else:
+                                st.session_state.transcribed_question = transcribed_text
+                                st.success(f"✅ Transcribed: '{transcribed_text}'")
+                            
+                            # Force a rerun to update the text area
+                            st.session_state.force_rerun = True
+                            st.rerun()
+                        else:
+                            st.error("❌ No audio transcribed. Please try again.")
+                            st.session_state.transcribed_question = ""
+            
+            with col1:
+                # Use the current value from session state
+                current_question = st.session_state.transcribed_question
+                
+                custom_question = st.text_area(
+                    "Enter your question here:", 
+                    value=current_question,
+                    placeholder="e.g., What were the total sales for Region X in Q3 2023?", 
+                    height=100,
+                    key="custom_question_input"
+                )
+                
+                # Update session state if user manually edits the text area
+                if custom_question != current_question:
+                    st.session_state.transcribed_question = custom_question
+            
+            # Reset force rerun flag
+            if st.session_state.force_rerun:
+                st.session_state.force_rerun = False
+            
+            if st.button("🔍 Get Answer for Custom Question", key="custom_q_btn", type="primary"):
+                question_to_process = custom_question.strip()
+                if question_to_process:
                     with st.spinner("Processing your custom question..."):
                         custom_qa_messages = [
-                            {"role": "system", "content": "You are an expert Q&A assistant. Answer based ONLY on the provided document context. If the information is not found, state that clearly."},
-                            {"role": "user", "content": f"Document Context:\n```\n{qa_context}\n```\n\nQuestion: {custom_question}"}
+                            {"role": "system", "content": "You are an expert Q&A assistant. Answer the user's question based ONLY on the provided document context. If the information is not found, state that clearly. Provide specific details if available."},
+                            {"role": "user", "content": f"Document Context:\n```\n{qa_context}\n```\n\nQuestion: {question_to_process}"}
                         ]
                         custom_answer = groq.call_api(custom_qa_messages, max_tokens=1536) 
-                        st.success(f"**Your Question:** {custom_question}\n\n**💡 Answer:**\n{custom_answer}")
+                        st.success(f"**Your Question:** {question_to_process}\n\n**💡 Answer:**\n{custom_answer}")
+                        
+                        # Clear the transcribed question after processing
+                        st.session_state.transcribed_question = ""
                 else:
                     st.warning("Please enter a question before submitting.")
             
@@ -1124,7 +1101,8 @@ def main():
                             key=f"download_{session_key}"
                         )
                         export_buttons_made += 1
-                if export_buttons_made == 0 : st.info("No content generated yet to export for this session.")
+                if export_buttons_made == 0: 
+                    st.info("No content generated yet to export for this session.")
 
             with prev_col:
                 st.markdown("#### Document Preview (First part of extracted text)")
@@ -1140,14 +1118,15 @@ def main():
         st.info("👋 Welcome! Please upload a sales-related PDF document using the browser above to begin analysis.")
         if not initial_valid_keys_present: 
             st.error(
-                "Reminder: Groq API Key configuration needs attention."
+                "Reminder: Groq API Key configuration needs attention. "
+                "Ensure `ALL_GROQ_API_KEYS` in the script contains valid keys."
             )
 
 if __name__ == "__main__":
     # Initialize session state keys
-    for key_name in ['comp_analysis', 'kpi_text_ai', 'risk_ai', 'raw_transcript', 'corrected_transcript', 'last_audio_chunk']: 
+    for key_name in ['comp_analysis', 'kpi_text_ai', 'risk_ai', 'transcribed_question', 'force_rerun']: 
         if key_name not in st.session_state: 
-            st.session_state[key_name] = None
+            st.session_state[key_name] = None if key_name != 'force_rerun' else False
     try:
         main()
     except Exception as e:
