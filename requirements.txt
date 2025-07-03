@@ -1,27 +1,29 @@
+# Core Libraries
 streamlit
 pandas
 numpy
 plotly
 requests
+matplotlib
+python-dotenv
+
 # PDF Processing Libraries (optional, but script tries to use them)
 PyPDF2
 PyMuPDF
 pdfplumber
-# NLP Libraries (optional, but script tries to use them)
-transformers
-torch # Common backend for transformers, especially for Hugging Face pipelines
-textstat
-matplotlib
-python-dotenv
-streamlit
-matplotlib
-plotly
+
+# NLP Libraries
 transformers
 torch
 textstat
-pandas
-requests
 scikit-learn
-streamlit-webrtc 
-av 
-numpy
+
+# Word Cloud (used in your original script)
+wordcloud
+
+# Speech Recognition
+SpeechRecognition
+
+# Streamlit WebRTC for audio/video processing
+streamlit-webrtc
+av
